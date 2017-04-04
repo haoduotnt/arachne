@@ -4,7 +4,7 @@ import (
 	"github.com/bmeg/arachne/jsengine"
 	"github.com/bmeg/arachne/ophion"
 	"github.com/bmeg/arachne/protoutil"
-	"github.com/gogo/protobuf/types"
+	"github.com/golang/protobuf/ptypes/struct"
 	"log"
 )
 
@@ -264,14 +264,14 @@ func (self *PipeEngine) Values(labels []string) QueryInterface {
 			go func() {
 				defer close(o)
 				for i := range self.pipe(PipeRequest{LoadProperties:true}) {
-					var props *types.Struct = nil
+					var props *structpb.Struct = nil
 					if v := i.GetCurrent().GetVertex(); v != nil && v.Properties != nil {
 						props = v.GetProperties()
 					} else if v := i.GetCurrent().GetEdge(); v != nil && v.Properties != nil {
 						props = v.GetProperties()
 					}
 					if props != nil {
-						out := types.Struct{Fields: map[string]*types.Value{}}
+						out := structpb.Struct{Fields: map[string]*structpb.Value{}}
 						if len(labels) == 0 {
 							protoutil.CopyStructToStruct(&out, props)
 						} else {
@@ -355,7 +355,7 @@ func (self *PipeEngine) Property(key string, value interface{}) QueryInterface {
 					if v := i.GetCurrent().GetVertex(); v != nil {
 						vl := *v //local copy
 						if vl.Properties == nil {
-							vl.Properties = &types.Struct{Fields: map[string]*types.Value{}}
+							vl.Properties = &structpb.Struct{Fields: map[string]*structpb.Value{}}
 						}
 						protoutil.StructSet(vl.Properties, key, value)
 						o <- i.AddCurrent(ophion.QueryResult{&ophion.QueryResult_Vertex{&vl}})
@@ -363,7 +363,7 @@ func (self *PipeEngine) Property(key string, value interface{}) QueryInterface {
 					if e := i.GetCurrent().GetEdge(); e != nil {
 						el := *e
 						if el.Properties == nil {
-							el.Properties = &types.Struct{Fields: map[string]*types.Value{}}
+							el.Properties = &structpb.Struct{Fields: map[string]*structpb.Value{}}
 						}
 						protoutil.StructSet(el.Properties, key, value)
 						o <- i.AddCurrent(ophion.QueryResult{&ophion.QueryResult_Edge{&el}})
