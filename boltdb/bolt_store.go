@@ -6,7 +6,8 @@ import (
 	"github.com/bmeg/arachne/gdbi"
 	"github.com/bmeg/arachne/ophion"
 	"github.com/boltdb/bolt"
-	proto "github.com/golang/protobuf/proto"
+	// proto "github.com/golang/protobuf/proto"
+	proto "github.com/gogo/protobuf/proto"
 	//"github.com/golang/protobuf/ptypes/struct"
 	//"log"
 )
@@ -20,11 +21,6 @@ var OEdgeBucket = []byte("oedges")
 //key: dest 0x00 src 0x00 edgeid
 //value: blank
 var IEdgeBucket = []byte("iedges")
-
-//Incoming edges
-//key: edgeid
-//value: src 0x00 dst 0x00 edgeid
-var EdgeBucket = []byte("edges")
 
 //Vertices
 //key: vertex id
@@ -44,9 +40,6 @@ func NewBoltArachne(path string) gdbi.ArachneInterface {
 		}
 		if tx.Bucket(IEdgeBucket) == nil {
 			tx.CreateBucket(IEdgeBucket)
-		}
-		if tx.Bucket(EdgeBucket) == nil {
-			tx.CreateBucket(EdgeBucket)
 		}
 		if tx.Bucket(VertexBucket) == nil {
 			tx.CreateBucket(VertexBucket)
@@ -98,18 +91,16 @@ func (self *BoltArachne) GetVertex(key string) *ophion.Vertex {
 
 func (self *BoltArachne) SetEdge(edge ophion.Edge) error {
 	err := self.db.Update(func(tx *bolt.Tx) error {
-		eb := tx.Bucket(EdgeBucket)
 		oeb := tx.Bucket(OEdgeBucket)
 		ieb := tx.Bucket(IEdgeBucket)
 		src := edge.Out
 		dst := edge.In
-		eid_num, _ := eb.NextSequence()
+		eid_num, _ := oeb.NextSequence()
 		eid := fmt.Sprintf("%d", eid_num)
 		edge.Gid = eid
 		okey := bytes.Join([][]byte{[]byte(src), []byte(dst), []byte(eid)}, []byte{0})
 		ikey := bytes.Join([][]byte{[]byte(dst), []byte(src), []byte(eid)}, []byte{0})
 		data, _ := proto.Marshal(&edge)
-		eb.Put([]byte(eid), okey)
 		oeb.Put(okey, data)
 		ieb.Put(ikey, []byte{})
 		return nil
@@ -124,7 +115,7 @@ type keyval struct {
 
 var NTHREAD = 5
 
-func (self *BoltArachne) GetVertexList() chan ophion.Vertex {
+func (self *BoltArachne) GetVertexList(loadProp bool) chan ophion.Vertex {
 	o := make(chan ophion.Vertex, 100)
 	od := make(chan keyval, 100)
 
@@ -135,9 +126,14 @@ func (self *BoltArachne) GetVertexList() chan ophion.Vertex {
 			vb := tx.Bucket(VertexBucket)
 			c := vb.Cursor()
 			for k, v := c.First(); k != nil; k, v = c.Next() {
-				ov := make([]byte, len(v))
-				copy(ov, v) //don't move bolt values out of transaction, send copy instead
-				od <- keyval{key: string(k), value: ov} 
+				if loadProp {
+					ov := make([]byte, len(v))
+					copy(ov, v) //don't move bolt values out of transaction, send copy instead
+					od <- keyval{key: string(k), value: ov} 
+				} else {
+					//just need a stub vertex, with the id
+					od <- keyval{key: string(k)}
+				}
 			}
 			return nil
 		})
@@ -146,17 +142,26 @@ func (self *BoltArachne) GetVertexList() chan ophion.Vertex {
 	//de-serialize
 	closer := make(chan bool, NTHREAD)
 	for i := 0; i < NTHREAD; i++ {
-		go func() {
-			for kv := range od {
-				i := ophion.Vertex{}
-				proto.Unmarshal(kv.value, &i)
-				i.Gid = string(kv.key)
-				o <- i
-			}
-			closer <- true
-		}()
+		if loadProp {
+			go func() {
+				for kv := range od {
+					i := ophion.Vertex{}
+					proto.Unmarshal(kv.value, &i)
+					i.Gid = string(kv.key)
+					o <- i
+				}
+				closer <- true
+			}()
+		} else {
+			go func() {
+				for kv := range od {
+				 o <- ophion.Vertex{Gid:string(kv.key)}
+				}
+				closer <- true
+			}()
+		}
 	}
-
+	
 	//close channel after done
 	go func() {
 		for i := 0; i < NTHREAD; i++ {
@@ -168,7 +173,7 @@ func (self *BoltArachne) GetVertexList() chan ophion.Vertex {
 	return o
 }
 
-func (self *BoltArachne) GetOutList(key string, filter gdbi.EdgeFilter) chan ophion.Vertex {
+func (self *BoltArachne) GetOutList(key string, loadProp bool, filter gdbi.EdgeFilter) chan ophion.Vertex {
 	vo := make(chan string, 100)
 	o := make(chan ophion.Vertex, 100)
 	go func() {
@@ -199,18 +204,22 @@ func (self *BoltArachne) GetOutList(key string, filter gdbi.EdgeFilter) chan oph
 	go func() {
 		defer close(o)
 		for i := range vo {
-			v := self.GetVertex(i)
-			if v == nil {
-				//log.Printf("Vertex Missing %s", i)
+			if loadProp {
+				v := self.GetVertex(i)
+				if v == nil {
+					//log.Printf("Vertex Missing %s", i)
+				} else {
+					o <- *v
+				}
 			} else {
-				o <- *v
+				o <- ophion.Vertex{Gid:i}
 			}
 		}
 	}()
 	return o
 }
 
-func (self *BoltArachne) GetInList(key string, filter gdbi.EdgeFilter) chan ophion.Vertex {
+func (self *BoltArachne) GetInList(key string, loadProp bool, filter gdbi.EdgeFilter) chan ophion.Vertex {
 	vi := make(chan string, 100)
 	o := make(chan ophion.Vertex, 100)
 	go func() {
@@ -222,7 +231,6 @@ func (self *BoltArachne) GetInList(key string, filter gdbi.EdgeFilter) chan ophi
 			pre := append([]byte(key), 0)
 			for k, _ := c.Seek(pre); bytes.HasPrefix(k, pre); k, _ = c.Next() {
 				key_data := bytes.Split(k, []byte{0})
-
 				send := false
 				if filter != nil {
 					e := ophion.Edge{}
@@ -235,7 +243,6 @@ func (self *BoltArachne) GetInList(key string, filter gdbi.EdgeFilter) chan ophi
 				} else {
 					send = true
 				}
-
 				if send {
 					vi <- string(key_data[1])
 				}
@@ -246,13 +253,17 @@ func (self *BoltArachne) GetInList(key string, filter gdbi.EdgeFilter) chan ophi
 	go func() {
 		defer close(o)
 		for i := range vi {
-			o <- *self.GetVertex(i)
+			if loadProp {
+				o <- *self.GetVertex(i)
+			} else {
+				o <- ophion.Vertex{Gid:i}
+			}
 		}
 	}()
 	return o
 }
 
-func (self *BoltArachne) GetOutEdgeList(key string, filter gdbi.EdgeFilter) chan ophion.Edge {
+func (self *BoltArachne) GetOutEdgeList(key string, loadProp bool, filter gdbi.EdgeFilter) chan ophion.Edge {
 	o := make(chan ophion.Edge, 100)
 	go func() {
 		defer close(o)
@@ -263,7 +274,14 @@ func (self *BoltArachne) GetOutEdgeList(key string, filter gdbi.EdgeFilter) chan
 			for k, v := c.Seek(pre); bytes.HasPrefix(k, pre); k, v = c.Next() {
 				send := false
 				e := ophion.Edge{}
-				proto.Unmarshal(v, &e)
+				if loadProp {
+					proto.Unmarshal(v, &e)
+				} else {
+					key_data := bytes.Split(k, []byte{0})
+					e.Out = string(key_data[0])
+					e.In = string(key_data[1])
+					e.Gid = string(key_data[2])
+				}
 				if filter != nil {
 					if filter(e) {
 						send = true
@@ -281,7 +299,7 @@ func (self *BoltArachne) GetOutEdgeList(key string, filter gdbi.EdgeFilter) chan
 	return o
 }
 
-func (self *BoltArachne) GetInEdgeList(key string, filter gdbi.EdgeFilter) chan ophion.Edge {
+func (self *BoltArachne) GetInEdgeList(key string, loadProp bool, filter gdbi.EdgeFilter) chan ophion.Edge {
 	o := make(chan ophion.Edge, 100)
 	go func() {
 		defer close(o)
@@ -295,7 +313,14 @@ func (self *BoltArachne) GetInEdgeList(key string, filter gdbi.EdgeFilter) chan 
 				ikey := bytes.Join([][]byte{[]byte(key_data[1]), []byte(key_data[0]), []byte(key_data[2])}, []byte{0})
 				d := ob.Get([]byte(ikey))
 				e := ophion.Edge{}
-				proto.Unmarshal(d, &e)
+				if loadProp {
+					proto.Unmarshal(d, &e)
+				} else {
+					key_data := bytes.Split(k, []byte{0})
+					e.In = string(key_data[0])
+					e.Out = string(key_data[1])
+					e.Gid = string(key_data[2])
+				}
 				send := false
 				if filter != nil {
 					if filter(e) {
@@ -314,7 +339,7 @@ func (self *BoltArachne) GetInEdgeList(key string, filter gdbi.EdgeFilter) chan 
 	return o
 }
 
-func (self *BoltArachne) GetEdgeList() chan ophion.Edge {
+func (self *BoltArachne) GetEdgeList(loadProp bool) chan ophion.Edge {
 	o := make(chan ophion.Edge, 100)
 	go func() {
 		defer close(o)
@@ -322,9 +347,14 @@ func (self *BoltArachne) GetEdgeList() chan ophion.Edge {
 			vb := tx.Bucket(OEdgeBucket)
 			c := vb.Cursor()
 			for k, v := c.First(); k != nil; k, v = c.Next() {
-				e := ophion.Edge{}
-				proto.Unmarshal(v, &e)
-				o <- e
+				if loadProp {
+					e := ophion.Edge{}
+					proto.Unmarshal(v, &e)
+					o <- e
+				} else {
+					key_data := bytes.Split(k, []byte{0})
+					o <- ophion.Edge{Gid:string(key_data[2]), Out:string(key_data[0]), In:string(key_data[1])}
+				}
 			}
 			return nil
 		})
@@ -334,7 +364,6 @@ func (self *BoltArachne) GetEdgeList() chan ophion.Edge {
 
 func (self *BoltArachne) DelEdge(id string) error {
 	err := self.db.Update(func(tx *bolt.Tx) error {
-		eb := tx.Bucket(EdgeBucket)
 		oeb := tx.Bucket(OEdgeBucket)
 		ieb := tx.Bucket(IEdgeBucket)
 
@@ -347,8 +376,6 @@ func (self *BoltArachne) DelEdge(id string) error {
 		for _, okey := range odel {
 			key_data := bytes.Split(okey, []byte{0})
 			ikey := bytes.Join([][]byte{[]byte(key_data[1]), []byte(key_data[0]), []byte(key_data[2])}, []byte{0})
-			eid := key_data[2]
-			eb.Delete(eid)
 			oeb.Delete(okey)
 			ieb.Delete(ikey)
 		}
@@ -361,7 +388,6 @@ func (self *BoltArachne) DelEdge(id string) error {
 func (self *BoltArachne) DelVertex(id string) error {
 	//log.Printf("del %s", id)
 	err := self.db.Update(func(tx *bolt.Tx) error {
-		eb := tx.Bucket(EdgeBucket)
 		oeb := tx.Bucket(OEdgeBucket)
 		ieb := tx.Bucket(IEdgeBucket)
 		vb := tx.Bucket(VertexBucket)
@@ -377,8 +403,6 @@ func (self *BoltArachne) DelVertex(id string) error {
 		for _, okey := range odel {
 			key_data := bytes.Split(okey, []byte{0})
 			ikey := bytes.Join([][]byte{[]byte(key_data[1]), []byte(key_data[0]), []byte(key_data[2])}, []byte{0})
-			eid := key_data[2]
-			eb.Delete(eid)
 			oeb.Delete(okey)
 			ieb.Delete(ikey)
 		}
