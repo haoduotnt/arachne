@@ -44,7 +44,7 @@ type ArachneInterface interface {
 
 
 type DBI interface {
-	GetVertex(key string) *ophion.Vertex
+	GetVertex(key string, load bool) *ophion.Vertex
 	GetVertexList(load bool) chan ophion.Vertex
 	GetEdgeList(load bool) chan ophion.Edge
 	

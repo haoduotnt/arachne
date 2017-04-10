@@ -44,7 +44,7 @@ func (self *PipeEngine) V(key ...string) QueryInterface {
 				o := make(chan Traveler, PIPE_SIZE)
 				go func() {
 					defer close(o)
-					v := self.db.GetVertex(key[0])
+					v := self.db.GetVertex(key[0], request.LoadProperties)
 					if v != nil {
 						c := Traveler{}
 						o <- c.AddCurrent(ophion.QueryResult{&ophion.QueryResult_Vertex{v}})

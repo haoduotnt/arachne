@@ -63,14 +63,13 @@ func (self *BoltArachne) SetVertex(vertex ophion.Vertex) error {
 	err := self.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(VertexBucket)
 		d, _ := proto.Marshal(&vertex)
-		//log.Printf("Putting: %s %#v %#v", vertex.Gid, vertex, d)
 		b.Put([]byte(vertex.Gid), d)
 		return nil
 	})
 	return err
 }
 
-func (self *BoltArachne) GetVertex(key string) *ophion.Vertex {
+func (self *BoltArachne) GetVertex(key string, loadProp bool) *ophion.Vertex {
 	var out *ophion.Vertex = nil
 	err := self.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(VertexBucket)
@@ -79,8 +78,12 @@ func (self *BoltArachne) GetVertex(key string) *ophion.Vertex {
 		if d == nil {
 			return nil
 		}
-		proto.Unmarshal(d, o)
-		out = o
+		if loadProp {
+			proto.Unmarshal(d, o)
+			out = o
+		} else {
+			out = &ophion.Vertex{Gid:key}
+		}
 		return nil
 	})
 	if err != nil {
@@ -205,7 +208,7 @@ func (self *BoltArachne) GetOutList(key string, loadProp bool, filter gdbi.EdgeF
 		defer close(o)
 		for i := range vo {
 			if loadProp {
-				v := self.GetVertex(i)
+				v := self.GetVertex(i, loadProp)
 				if v == nil {
 					//log.Printf("Vertex Missing %s", i)
 				} else {
@@ -254,7 +257,7 @@ func (self *BoltArachne) GetInList(key string, loadProp bool, filter gdbi.EdgeFi
 		defer close(o)
 		for i := range vi {
 			if loadProp {
-				o <- *self.GetVertex(i)
+				o <- *self.GetVertex(i, loadProp)
 			} else {
 				o <- ophion.Vertex{Gid:i}
 			}
